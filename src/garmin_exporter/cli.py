@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from .exporter import Exporter
 from .report import report
+from .auth import RefreshingClient
 
 
 def date_arg(value):
@@ -40,12 +41,13 @@ def main(argv=None):
         key = resolve_api_key()
         with PersonalApiAuthenticator() as auth:
             token = auth.obtain_token(key)
-        with GarminPersonalApiClient(token.access_token) as client:
-            if args.command == "auth-test":
-                client.get_user_profile_settings(); print("Authentication and profile request succeeded."); return 0
-            exporter = Exporter(client, args.output, delay=args.delay)
-            try: exporter.run(start, end, args.categories.split(",") if args.categories else None, args.batch_days)
-            finally: result = report(args.output)
+            with GarminPersonalApiClient(token.access_token) as raw_client:
+                client = RefreshingClient(raw_client, auth, key, token)
+                if args.command == "auth-test":
+                    client.get_user_profile_settings(); print("Authentication and profile request succeeded."); return 0
+                exporter = Exporter(client, args.output, delay=args.delay)
+                try: exporter.run(start, end, args.categories.split(",") if args.categories else None, args.batch_days)
+                finally: result = report(args.output)
         print(f"Reports: {Path(args.output).resolve() / 'reports'}")
         return 1 if any(k != "success" and v for k, v in result["query_status_counts"].items()) or result["integrity_failures"] else 0
     except KeyboardInterrupt:
