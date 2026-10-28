@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "garmin-history-exporter"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["garmin-connect-personal-api-python>=1.0,<2", "python-dotenv>=1,<2"]
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.9,<1"]
+[project.scripts]
+garmin-export = "garmin_exporter.cli:main"
+[tool.setuptools.packages.find]
+where = ["src"]
