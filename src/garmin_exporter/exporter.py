@@ -29,9 +29,19 @@ def valid_original(data):
 
 class Exporter:
     def __init__(self, client, root, delay=0.25, retries=3, sleep=time.sleep):
-        self.client, self.root, self.delay, self.retries, self.sleep = client, Path(root), delay, retries, sleep
+        self.client, self.root, self.delay, self.retries, self.sleep = (
+            client,
+            Path(root),
+            delay,
+            retries,
+            sleep,
+        )
         self.state_path = self.root / "manifest/export_state.json"
-        self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {"queries": {}}
+        self.state = (
+            json.loads(self.state_path.read_text())
+            if self.state_path.exists()
+            else {"queries": {}}
+        )
 
     def save(self):
         atomic_json(self.state_path, self.state)
@@ -40,11 +50,28 @@ class Exporter:
         path = Path(path)
         previous = self.state["queries"].get(key, {})
         target = self.root / path
-        if previous.get("status") == "success" and target.is_file() and digest(target) == previous.get("sha256"):
-            if not binary or valid_original(target.read_bytes()):
-                return True
-        entry = {"method": method, "args": args, "kwargs": kwargs or {}, "path": path.as_posix(),
-                 "timestamp": datetime.now(timezone.utc).isoformat()}
+        if (
+            previous.get("status") == "success"
+            and target.is_file()
+            and digest(target) == previous.get("sha256")
+        ):
+            try:
+                if binary:
+                    valid = valid_original(target.read_bytes())
+                else:
+                    json.loads(target.read_text(encoding="utf-8"))
+                    valid = True
+                if valid:
+                    return True
+            except (ValueError, UnicodeError, OSError):
+                pass
+        entry = {
+            "method": method,
+            "args": args,
+            "kwargs": kwargs or {},
+            "path": path.as_posix(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
         entry["status"] = "pending"
         self.state["queries"][key] = entry
         self.save()
@@ -57,76 +84,158 @@ class Exporter:
                         raise ValueError("Invalid original archive")
                     if not valid_original(value):
                         raise ValueError("Invalid original archive")
-                checksum = atomic_bytes(target, value) if binary else atomic_json(target, value)
-                entry.update(status="success", sha256=checksum, bytes=target.stat().st_size,
-                             empty=(not value))
+                checksum = (
+                    atomic_bytes(target, value)
+                    if binary
+                    else atomic_json(target, value)
+                )
+                entry.update(
+                    status="success",
+                    sha256=checksum,
+                    bytes=target.stat().st_size,
+                    empty=(not value),
+                )
                 self.state["queries"][key] = entry
                 self.save()
                 return True
             except Exception as exc:
                 response = getattr(exc, "response", None)
-                status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-                retryable = status in (429, 500, 502, 503, 504) or (status is None and exc.__class__.__name__ in ("ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout"))
+                status = getattr(exc, "status_code", None) or getattr(
+                    response, "status_code", None
+                )
+                retryable = status in (429, 500, 502, 503, 504) or (
+                    status is None
+                    and exc.__class__.__name__
+                    in ("ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout")
+                )
                 if retryable and attempt < self.retries:
-                    retry_after = (getattr(response, "headers", {}) or {}).get("Retry-After", "")
+                    retry_after = (getattr(response, "headers", {}) or {}).get(
+                        "Retry-After", ""
+                    )
                     try:
                         wait = float(retry_after)
                     except (TypeError, ValueError):
                         try:
-                            wait = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+                            wait = (
+                                parsedate_to_datetime(retry_after)
+                                - datetime.now(timezone.utc)
+                            ).total_seconds()
                         except (TypeError, ValueError, OverflowError):
                             wait = 2**attempt + random.random()
                     wait = min(60, max(0, wait))
                     self.sleep(wait)
                     continue
-                entry.update(status="failed", http_status=status, error_type=type(exc).__name__)
+                entry.update(
+                    status="failed", http_status=status, error_type=type(exc).__name__
+                )
                 self.state["queries"][key] = entry
                 self.save()
                 return False
         return False
 
     def run(self, start, end, categories=None, batch_days=30):
-        categories = set(categories or list(RANGES) + list(DAYS) + list(ACCOUNT) + ["activities", "menstrual_day"])
+        categories = set(
+            categories
+            or list(RANGES)
+            + list(DAYS)
+            + list(ACCOUNT)
+            + ["activities", "menstrual_day"]
+        )
         known = set(RANGES) | set(DAYS) | set(ACCOUNT) | {"activities", "menstrual_day"}
-        if categories - known: raise ValueError("Unknown categories: " + ", ".join(sorted(categories-known)))
-        self.state["last_plan"] = {"start": start.isoformat(), "end": end.isoformat(), "categories": sorted(categories), "batch_days": batch_days}
+        if categories - known:
+            raise ValueError(
+                "Unknown categories: " + ", ".join(sorted(categories - known))
+            )
+        self.state["last_plan"] = {
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "categories": sorted(categories),
+            "batch_days": batch_days,
+        }
         self.save()
         for name, method in ACCOUNT.items():
-            if name in categories: self.request(name, method, [], f"raw/account/{name}.json")
+            if name in categories:
+                self.request(name, method, [], f"raw/account/{name}.json")
         for name, method in RANGES.items():
-            if name not in categories: continue
+            if name not in categories:
+                continue
             for a, b in windows(start, end, batch_days):
                 print(f"{name}: {a} to {b}", flush=True)
-                self.request(f"{name}:{a}:{b}", method, [a, b], f"raw/ranges/{name}/{a}_{b}.json")
+                self.request(
+                    f"{name}:{a}:{b}", method, [a, b], f"raw/ranges/{name}/{a}_{b}.json"
+                )
         for name, method in DAYS.items():
-            if name not in categories: continue
+            if name not in categories:
+                continue
             for a, _ in windows(start, end, 1):
                 print(f"{name}: {a}", flush=True)
                 self.request(f"{name}:{a}", method, [a], f"raw/daily/{a}/{name}.json")
         if "menstrual_day" in categories:
             for a, _ in windows(start, end, 1):
-                self.request(f"menstrual_day:{a}:{end}", "get_menstrual_cycle_day_view", [a, end.isoformat()], f"raw/daily/{a}/menstrual_day.json")
-        if "activities" in categories: self.activities(start, end)
+                self.request(
+                    f"menstrual_day:{a}:{end}",
+                    "get_menstrual_cycle_day_view",
+                    [a, end.isoformat()],
+                    f"raw/daily/{a}/menstrual_day.json",
+                )
+        if "activities" in categories:
+            self.activities(start, end)
 
     def activities(self, start, end):
         offset, limit = 0, 100
         seen_pages = set()
+        seen_activities = set()
         while True:
             key = f"activities:page:{start}:{end}:{offset}"
             path = f"raw/activities/pages/{start}_{end}_{offset}.json"
-            if not self.request(key, "search_activities", [], path, {"start": offset, "limit": limit, "start_date": start.isoformat(), "end_date": end.isoformat()}): return
+            if not self.request(
+                key,
+                "search_activities",
+                [],
+                path,
+                {
+                    "start": offset,
+                    "limit": limit,
+                    "start_date": start.isoformat(),
+                    "end_date": end.isoformat(),
+                },
+            ):
+                return
             page = json.loads((self.root / path).read_text())
             if not isinstance(page, list):
-                self.state["queries"][key]["status"] = "invalid_response"; self.save(); return
+                self.state["queries"][key]["status"] = "invalid_response"
+                self.save()
+                return
             signature = json.dumps(page, sort_keys=True)
             if page and signature in seen_pages:
-                self.state["queries"][key]["status"] = "repeated_page"; self.save(); return
+                self.state["queries"][key]["status"] = "repeated_page"
+                self.save()
+                return
             seen_pages.add(signature)
             for item in page:
-                if not isinstance(item, dict) or not str(item.get("activityId", "")).isdigit():
-                    self.state["queries"][key]["status"] = "invalid_activity_id"; self.save(); continue
+                if (
+                    not isinstance(item, dict)
+                    or not str(item.get("activityId", "")).isdigit()
+                ):
+                    self.state["queries"][key]["status"] = "invalid_activity_id"
+                    self.save()
+                    continue
                 ident = str(item["activityId"])
-                for suffix, method, binary in (("details.json", "get_activity", False), ("workouts.json", "get_activity_workouts", False), ("original.zip", "download_activity", True)):
-                    self.request(f"activity:{ident}:{suffix}", method, [int(ident)], f"activities/{ident}/{suffix}", binary=binary)
-            if not page: return
+                if ident in seen_activities:
+                    continue
+                seen_activities.add(ident)
+                for suffix, method, binary in (
+                    ("details.json", "get_activity", False),
+                    ("workouts.json", "get_activity_workouts", False),
+                    ("original.zip", "download_activity", True),
+                ):
+                    self.request(
+                        f"activity:{ident}:{suffix}",
+                        method,
+                        [int(ident)],
+                        f"activities/{ident}/{suffix}",
+                        binary=binary,
+                    )
+            if not page:
+                return
             offset += len(page)
