@@ -45,6 +45,9 @@ class Exporter:
                 return True
         entry = {"method": method, "args": args, "kwargs": kwargs or {}, "path": path.as_posix(),
                  "timestamp": datetime.now(timezone.utc).isoformat()}
+        entry["status"] = "pending"
+        self.state["queries"][key] = entry
+        self.save()
         for attempt in range(self.retries + 1):
             try:
                 self.sleep(self.delay)
@@ -125,5 +128,5 @@ class Exporter:
                 ident = str(item["activityId"])
                 for suffix, method, binary in (("details.json", "get_activity", False), ("workouts.json", "get_activity_workouts", False), ("original.zip", "download_activity", True)):
                     self.request(f"activity:{ident}:{suffix}", method, [int(ident)], f"activities/{ident}/{suffix}", binary=binary)
-            if len(page) < limit: return
-            offset += limit
+            if not page: return
+            offset += len(page)

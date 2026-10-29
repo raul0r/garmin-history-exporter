@@ -8,6 +8,7 @@ from pathlib import Path
 from garmin_exporter.exporter import Exporter, windows
 from garmin_exporter.report import report
 from garmin_exporter.storage import atomic_json
+from garmin_exporter.locking import archive_lock
 
 class Client:
     def __init__(self): self.calls = 0
@@ -41,6 +42,24 @@ class Tests(unittest.TestCase):
         e.run(d,d,["activities"])
         self.assertEqual(len(list((self.root/'activities').iterdir())),100)
         self.assertTrue((self.root/'raw/activities/pages/2026-01-01_2026-01-01_100.json').exists())
+    def test_server_capped_activity_pages(self):
+        class Capped(Client):
+            def search_activities(self, **kw):
+                return [{"activityId": kw["start"] + 1}] if kw["start"] < 2 else []
+        e = Exporter(Capped(), self.root, delay=0)
+        d = date(2026, 1, 1)
+        e.run(d, d, ["activities"])
+        self.assertEqual(len(list((self.root / "activities").iterdir())), 2)
+        self.assertIn("activities:page:2026-01-01:2026-01-01:2", e.state["queries"])
+
+    def test_lock_excludes_other_writer_and_releases(self):
+        with archive_lock(self.root):
+            with self.assertRaises(RuntimeError):
+                with archive_lock(self.root):
+                    pass
+        with archive_lock(self.root):
+            pass
+
     def test_report_no_values_and_schema(self):
         e=Exporter(Client(),self.root,delay=0); d=date(2026,1,1); e.run(d,d,["sleep"])
         data=report(self.root)
