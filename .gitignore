@@ -16,3 +16,5 @@ exports/
 
 # Local test exports may contain sensitive health data.
 output-test*/
+
+output-validation-30d/
