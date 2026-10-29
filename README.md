@@ -23,3 +23,6 @@ This prototype has important missing work: token renewal has not been validated 
 The report contains paths and data structure names but not sampled values. It is preliminary and is not a completeness certificate. Request exceptions are recorded by type and status rather than their potentially sensitive message. Contributions should use synthetic data only. Test with `PYTHONPATH=src python -m unittest discover -s tests -v` on Unix; in PowerShell set `$env:PYTHONPATH='src'` first.
 
 Official references: [client](https://github.com/garmin/connect-personal-api-python), [FAQ](https://developer.garmin.com/gc-developer-program/personal/personal-faq), [Swagger](https://developer.garmin.com/gc-developer-program/personal/swagger-docs). This independent project is not affiliated with Garmin.
+
+
+> **Full historical export readiness:** Not yet ready. Concurrent writers are not locked, endpoint coverage and historical completeness are not established, and token renewal has not been verified against actual expiry. Use separate output directories and avoid multi-year runs until these gaps are resolved. Original downloads are checked as ZIP archives, but that does not establish that their contents are complete or usable.

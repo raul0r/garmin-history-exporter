@@ -13,3 +13,6 @@ exports/
 *.db
 *token*.json
 *credential*
+
+# Local test exports may contain sensitive health data.
+output-test*/

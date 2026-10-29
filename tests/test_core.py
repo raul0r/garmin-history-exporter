@@ -1,4 +1,6 @@
 import json
+import io
+import zipfile
 import tempfile
 import unittest
 from datetime import date
@@ -16,7 +18,11 @@ class Client:
         return [{"activityId": n} for n in range(1, 101)] if kw["start"] == 0 else []
     def get_activity(self, activity_id): return {"activityId": activity_id}
     def get_activity_workouts(self, activity_id): return []
-    def download_activity(self, activity_id): return b'PK synthetic'
+    def download_activity(self, activity_id):
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as archive:
+            archive.writestr("activity.fit", b"synthetic")
+        return out.getvalue()
 
 class Tests(unittest.TestCase):
     def setUp(self):
@@ -47,6 +53,14 @@ class Tests(unittest.TestCase):
         e=Exporter(Bad(),self.root,delay=0); e.run(date(2026,1,1),date(2026,1,1),['sleep'])
         self.assertNotIn('secret-example',e.state_path.read_text())
         self.assertEqual(e.state['queries']['sleep:2026-01-01']['status'],'failed')
+    def test_invalid_original_is_failed(self):
+        class BadOriginal(Client):
+            def download_activity(self, activity_id): return b"not a zip"
+        e = Exporter(BadOriginal(), self.root, delay=0)
+        self.assertFalse(e.request("original", "download_activity", [1], "original.zip", binary=True))
+        self.assertEqual(e.state["queries"]["original"]["status"], "failed")
+        self.assertFalse((self.root / "original.zip").exists())
+
     def test_atomic_json(self):
         p=self.root/'x/a.json'; atomic_json(p,{'nested':[1,None]})
         self.assertEqual(json.loads(p.read_text()),{'nested':[1,None]})

@@ -1,4 +1,7 @@
 import json
+import io
+import zipfile
+from email.utils import parsedate_to_datetime
 import random
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -16,6 +19,14 @@ def windows(start, end, size):
         start = last + timedelta(days=1)
 
 
+def valid_original(data):
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return bool(archive.infolist()) and archive.testzip() is None
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return False
+
+
 class Exporter:
     def __init__(self, client, root, delay=0.25, retries=3, sleep=time.sleep):
         self.client, self.root, self.delay, self.retries, self.sleep = client, Path(root), delay, retries, sleep
@@ -30,13 +41,19 @@ class Exporter:
         previous = self.state["queries"].get(key, {})
         target = self.root / path
         if previous.get("status") == "success" and target.is_file() and digest(target) == previous.get("sha256"):
-            return True
+            if not binary or valid_original(target.read_bytes()):
+                return True
         entry = {"method": method, "args": args, "kwargs": kwargs or {}, "path": path.as_posix(),
                  "timestamp": datetime.now(timezone.utc).isoformat()}
         for attempt in range(self.retries + 1):
             try:
                 self.sleep(self.delay)
                 value = getattr(self.client, method)(*args, **(kwargs or {}))
+                if binary:
+                    if not isinstance(value, bytes):
+                        raise ValueError("Invalid original archive")
+                    if not valid_original(value):
+                        raise ValueError("Invalid original archive")
                 checksum = atomic_bytes(target, value) if binary else atomic_json(target, value)
                 entry.update(status="success", sha256=checksum, bytes=target.stat().st_size,
                              empty=(not value))
@@ -49,8 +66,14 @@ class Exporter:
                 retryable = status in (429, 500, 502, 503, 504) or (status is None and exc.__class__.__name__ in ("ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout"))
                 if retryable and attempt < self.retries:
                     retry_after = (getattr(response, "headers", {}) or {}).get("Retry-After", "")
-                    try: wait = max(0, float(retry_after))
-                    except (TypeError, ValueError): wait = min(60, 2**attempt + random.random())
+                    try:
+                        wait = float(retry_after)
+                    except (TypeError, ValueError):
+                        try:
+                            wait = (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds()
+                        except (TypeError, ValueError, OverflowError):
+                            wait = 2**attempt + random.random()
+                    wait = min(60, max(0, wait))
                     self.sleep(wait)
                     continue
                 entry.update(status="failed", http_status=status, error_type=type(exc).__name__)
