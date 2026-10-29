@@ -87,3 +87,49 @@ def test_repeated_and_malformed_pages_are_visible(tmp_path):
     e.run(d, d, ["activities"])
     assert "repeated_page" in [v["status"] for v in e.state["queries"].values()]
     assert "failed" in [v["status"] for v in e.state["queries"].values()]
+
+
+def test_retry_network_and_limit(tmp_path):
+    class Timeout(Exception):
+        pass
+
+    class Broken:
+        calls = 0
+
+        def get_daily_sleep(self, day):
+            self.calls += 1
+            raise Timeout()
+
+    client = Broken()
+    waits = []
+    e = Exporter(client, tmp_path, delay=0, retries=2, sleep=waits.append)
+    assert not e.request("x", "get_daily_sleep", ["2020-01-01"], "data.json")
+    assert client.calls == 3
+    assert e.state["queries"]["x"]["status"] == "failed"
+    assert all(0 <= wait <= 60 for wait in waits)
+
+
+def test_failure_after_page_is_visible(tmp_path):
+    class Pages:
+        def search_activities(self, **kwargs):
+            if kwargs["start"]:
+                raise RuntimeError("private")
+            return [{"activityId": 1}]
+
+        def get_activity(self, ident):
+            return {}
+
+        def get_activity_workouts(self, ident):
+            return []
+
+        def download_activity(self, ident):
+            return b"invalid"
+
+    e = Exporter(Pages(), tmp_path, delay=0)
+    d = date(2020, 1, 1)
+    e.run(d, d, ["activities"])
+    assert (
+        e.state["queries"]["activities:page:2020-01-01:2020-01-01:1"]["status"]
+        == "failed"
+    )
+    assert "private" not in e.state_path.read_text()
