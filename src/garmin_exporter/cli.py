@@ -53,7 +53,8 @@ def main(argv=None):
             if result["integrity_failures"]
             or any(result["unchecked_planned_queries"].values())
             or any(
-                k != "success" and v for k, v in result["query_status_counts"].items()
+                k not in ("success", "resolved") and v
+                for k, v in result["query_status_counts"].items()
             )
             else 0
         )
@@ -95,7 +96,8 @@ def main(argv=None):
         return (
             1
             if any(
-                k != "success" and v for k, v in result["query_status_counts"].items()
+                k not in ("success", "resolved") and v
+                for k, v in result["query_status_counts"].items()
             )
             or result["integrity_failures"]
             or any(result["unchecked_planned_queries"].values())

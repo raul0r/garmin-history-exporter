@@ -56,26 +56,37 @@ def report(root):
             for v in value:
                 walk(v, dataset, path + "[]", query)
 
-    def observed(category, value):
-        if isinstance(value, dict):
-            for field in ("calendarDate", "startTimeLocal", "startTimeGMT"):
-                raw = value.get(field)
-                if isinstance(raw, str):
-                    try:
-                        day = date.fromisoformat(raw[:10]).isoformat()
-                    except ValueError:
-                        continue
-                    category["observed_start"] = min(
-                        filter(None, [category["observed_start"], day])
-                    )
-                    category["observed_end"] = max(
-                        filter(None, [category["observed_end"], day])
-                    )
-            for v in value.values():
-                observed(category, v)
-        elif isinstance(value, list):
-            for v in value:
-                observed(category, v)
+    def observed(category, value, name):
+        # Only top-level record objects (or the documented data array) are
+        # considered. Nested timestamps and sleep boundaries are not records.
+        records = (
+            value
+            if isinstance(value, list)
+            else ([value] if isinstance(value, dict) else [])
+        )
+        if (
+            name == "daily_summaries"
+            and isinstance(value, dict)
+            and isinstance(value.get("data"), list)
+        ):
+            records = value["data"]
+        field = "startTimeLocal" if name == "activities" else "calendarDate"
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            raw = record.get(field)
+            if not isinstance(raw, str):
+                continue
+            try:
+                day = date.fromisoformat(raw[:10]).isoformat()
+            except ValueError:
+                continue
+            category["observed_start"] = min(
+                filter(None, [category["observed_start"], day])
+            )
+            category["observed_end"] = max(
+                filter(None, [category["observed_end"], day])
+            )
 
     for key, item in entries.items():
         status = item.get("status", "unknown")
@@ -125,7 +136,7 @@ def report(root):
         json_files[name] += 1
         cat["empty"] += int(value is None or value == [] or value == {})
         walk(value, name, "$", key)
-        observed(cat, value)
+        observed(cat, value, name)
         # A top-level array is countable; a daily summaries data array is documented.
         records = (
             value
@@ -196,6 +207,14 @@ def report(root):
             unchecked[name] = sum(key not in entries for key in expected)
             if name == "activities" and not activity_terminal:
                 unchecked[name] = max(1, unchecked[name])
+    for key, item in entries.items():
+        if item.get("status") == "resolved":
+            children = item.get("replacements", [])
+            if not children or any(
+                entries.get(child, {}).get("status") != "success" or child in corrupt
+                for child in children
+            ):
+                corrupt.append(key)
     assessment = (
         "Historical completeness is not established. The scan is bounded by the selected dates; "
         "failures, missing data, unexamined dates and unimplemented endpoints may remain."
@@ -221,7 +240,11 @@ def report(root):
     atomic_json(out / "inventory.json", result)
     atomic_json(
         out / "errors.json",
-        {k: v for k, v in entries.items() if v.get("status") != "success"},
+        {
+            k: v
+            for k, v in entries.items()
+            if v.get("status") not in ("success", "resolved")
+        },
     )
     atomic_json(
         out / "summary.json",
@@ -254,7 +277,7 @@ def report(root):
     )
     for name, cat in sorted(categories.items()):
         lines.append(
-            f"| {name} | {cat['statuses']['success']} | {sum(v for k, v in cat['statuses'].items() if k != 'success')} | {cat['empty']} | {cat['records']} | {cat['observed_start'] or '?'} to {cat['observed_end'] or '?'} | {cat['bytes']} |"
+            f"| {name} | {cat['statuses']['success']} | {sum(v for k, v in cat['statuses'].items() if k not in ('success', 'resolved'))} | {cat['empty']} | {cat['records']} | {cat['observed_start'] or '?'} to {cat['observed_end'] or '?'} | {cat['bytes']} |"
         )
     lines.extend(
         [

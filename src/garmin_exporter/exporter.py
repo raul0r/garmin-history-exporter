@@ -141,6 +141,43 @@ class Exporter:
                 return False
         return False
 
+    def range_query(self, name, method, a, b):
+        key = f"{name}:{a}:{b}"
+        start, end = date.fromisoformat(a), date.fromisoformat(b)
+        previous = self.state["queries"].get(key, {})
+        # Seven-day calls succeeded for these endpoints; this is a conservative
+        # client batch size, not a claimed server maximum.
+        if (
+            name not in ("stress", "steps")
+            or (end - start).days < 7
+            or previous.get("status") == "success"
+        ):
+            return self.request(key, method, [a, b], f"raw/ranges/{name}/{a}_{b}.json")
+        replacements = [(x, y, f"{name}:{x}:{y}") for x, y in windows(start, end, 7)]
+        parent = (
+            previous
+            if previous.get("replacements")
+            else {
+                "method": method,
+                "args": [a, b],
+                "path": f"raw/ranges/{name}/{a}_{b}.json",
+                "prior_attempt": previous or None,
+                "replacements": [child for _, _, child in replacements],
+            }
+        )
+        parent["status"] = "pending"
+        self.state["queries"][key] = parent
+        self.save()
+        all_ok = True
+        for x, y, child in replacements:
+            ok = self.request(child, method, [x, y], f"raw/ranges/{name}/{x}_{y}.json")
+            self.state["queries"][child]["parent"] = key
+            self.save()
+            all_ok = ok and all_ok
+        parent["status"] = "resolved" if all_ok else "failed"
+        self.save()
+        return all_ok
+
     def run(self, start, end, categories=None, batch_days=30):
         categories = set(
             categories
@@ -169,9 +206,7 @@ class Exporter:
                 continue
             for a, b in windows(start, end, batch_days):
                 print(f"{name}: {a} to {b}", flush=True)
-                self.request(
-                    f"{name}:{a}:{b}", method, [a, b], f"raw/ranges/{name}/{a}_{b}.json"
-                )
+                self.range_query(name, method, a, b)
         for name, method in DAYS.items():
             if name not in categories:
                 continue

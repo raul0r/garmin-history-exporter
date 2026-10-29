@@ -168,3 +168,97 @@ def test_unchecked_and_schema_denominator(tmp_path):
     assert result["unchecked_planned_queries"]["sleep"] == 1
     assert result["schema"]["sleep"]["$.calendarDate"]["dataset_responses"] == 1
     assert result["categories"]["sleep"]["observed_start"] == "2020-01-01"
+
+
+def test_range_replacements_resume_and_failure(tmp_path):
+    from garmin_exporter.report import report
+
+    class Error(Exception):
+        status_code = 400
+
+    class Ranges:
+        def __init__(self):
+            self.calls = []
+            self.fail = True
+
+        def get_daily_stress(self, start, end):
+            self.calls.append((start, end))
+            if self.fail and start == "2026-01-08":
+                raise Error()
+            return []
+
+    client = Ranges()
+    e = Exporter(client, tmp_path, delay=0)
+    key = "stress:2026-01-01:2026-01-15"
+    e.state["queries"][key] = {"status": "failed", "http_status": 400}
+    assert not e.range_query("stress", "get_daily_stress", "2026-01-01", "2026-01-15")
+    assert client.calls == [
+        ("2026-01-01", "2026-01-07"),
+        ("2026-01-08", "2026-01-14"),
+        ("2026-01-15", "2026-01-15"),
+    ]
+    assert e.state["queries"][key]["prior_attempt"]["http_status"] == 400
+    assert e.state["queries"][key]["status"] == "failed"
+    client.calls.clear()
+    client.fail = False
+    e = Exporter(client, tmp_path, delay=0)
+    assert e.range_query("stress", "get_daily_stress", "2026-01-01", "2026-01-15")
+    assert client.calls == [("2026-01-08", "2026-01-14")]
+    assert e.state["queries"][key]["status"] == "resolved"
+    assert not report(tmp_path)["integrity_failures"]
+
+
+def test_sleep_dates_ignore_nested_boundaries(tmp_path):
+    from garmin_exporter.report import report
+    from garmin_exporter.storage import atomic_json
+
+    p = tmp_path / "sleep.json"
+    checksum = atomic_json(
+        p,
+        {
+            "calendarDate": "2026-01-01",
+            "sleep": {
+                "calendarDate": "2026-01-02",
+                "startTimeLocal": "2026-01-02T01:00:00",
+            },
+        },
+    )
+    atomic_json(
+        tmp_path / "manifest/export_state.json",
+        {
+            "queries": {
+                "sleep:2026-01-01": {
+                    "status": "success",
+                    "path": "sleep.json",
+                    "sha256": checksum,
+                    "args": ["2026-01-01"],
+                }
+            }
+        },
+    )
+    result = report(tmp_path)
+    assert result["categories"]["sleep"]["observed_start"] == "2026-01-01"
+    assert result["categories"]["sleep"]["observed_end"] == "2026-01-01"
+
+
+def test_range_interruption_resumes_completed_children(tmp_path):
+    class Ranges:
+        calls = []
+        interrupt = True
+
+        def get_daily_steps(self, start, end):
+            self.calls.append((start, end))
+            if self.interrupt and start == "2026-01-08":
+                raise KeyboardInterrupt()
+            return []
+
+    client = Ranges()
+    e = Exporter(client, tmp_path, delay=0)
+    with pytest.raises(KeyboardInterrupt):
+        e.range_query("steps", "get_daily_steps", "2026-01-01", "2026-01-14")
+    assert e.state["queries"]["steps:2026-01-01:2026-01-14"]["status"] == "pending"
+    client.interrupt = False
+    client.calls.clear()
+    e = Exporter(client, tmp_path, delay=0)
+    assert e.range_query("steps", "get_daily_steps", "2026-01-01", "2026-01-14")
+    assert client.calls == [("2026-01-08", "2026-01-14")]
