@@ -22,7 +22,9 @@ def atomic_bytes(path, data):
 
 
 def atomic_json(path, obj):
-    return atomic_bytes(path, (json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode())
+    return atomic_bytes(
+        path, (json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode()
+    )
 
 
 def digest(path):

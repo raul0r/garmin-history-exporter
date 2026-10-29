@@ -1,4 +1,5 @@
 """Refresh Garmin bearer tokens without exposing credentials in logs."""
+
 import time
 
 
@@ -25,8 +26,9 @@ class RefreshingClient:
             try:
                 return method(*args, **kwargs)
             except Exception as exc:
-                if getattr(exc, 'status_code', None) != 401:
+                if getattr(exc, "status_code", None) != 401:
                     raise
                 self.refresh(force=True)
                 return method(*args, **kwargs)
+
         return call
