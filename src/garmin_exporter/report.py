@@ -7,7 +7,8 @@ from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 
-from .exporter import valid_original
+from .endpoints import ACCOUNT, DAYS, RANGES
+from .exporter import valid_original, windows
 from .storage import atomic_bytes, atomic_json, digest
 
 
@@ -41,6 +42,8 @@ def report(root):
     activity_years = Counter()
     activity_types = Counter()
     originals = Counter()
+    json_files = Counter()
+    activity_terminal = False
 
     def walk(value, dataset, path, query):
         typ = "null" if value is None else type(value).__name__
@@ -80,6 +83,9 @@ def report(root):
         name = key.split(":", 1)[0]
         cat = categories[name]
         cat["statuses"][status] += 1
+        if item.get("http_status") in (401, 403):
+            cat.setdefault("inaccessible_requests", 0)
+            cat["inaccessible_requests"] += 1
         dates = [
             x
             for x in list(item.get("args", [])) + list(item.get("kwargs", {}).values())
@@ -116,6 +122,7 @@ def report(root):
         except (ValueError, UnicodeError):
             corrupt.append(key)
             continue
+        json_files[name] += 1
         cat["empty"] += int(value is None or value == [] or value == {})
         walk(value, name, "$", key)
         observed(cat, value)
@@ -134,6 +141,11 @@ def report(root):
         elif value is not None:
             cat["record_count_unknown_responses"] += 1
         if name == "activities" and isinstance(value, list):
+            plan = state.get("last_plan") or {}
+            if not value and key.startswith(
+                f"activities:page:{plan.get('start')}:{plan.get('end')}:"
+            ):
+                activity_terminal = True
             for activity in value:
                 if not isinstance(activity, dict):
                     continue
@@ -158,7 +170,32 @@ def report(root):
             "null": types.get("null", 0),
             "non_null": sum(types.values()) - types.get("null", 0),
             "responses_present": len(schema_responses[(dataset, path)]),
+            "dataset_responses": json_files[dataset],
         }
+    unchecked = Counter()
+    plan = state.get("last_plan")
+    if plan:
+        start = date.fromisoformat(plan["start"])
+        end = date.fromisoformat(plan["end"])
+        for name in plan["categories"]:
+            if name in ACCOUNT:
+                expected = [name]
+            elif name in RANGES:
+                expected = [
+                    f"{name}:{a}:{b}"
+                    for a, b in windows(start, end, plan["batch_days"])
+                ]
+            elif name in DAYS:
+                expected = [f"{name}:{a}" for a, _ in windows(start, end, 1)]
+            elif name == "menstrual_day":
+                expected = [f"{name}:{a}:{end}" for a, _ in windows(start, end, 1)]
+            elif name == "activities":
+                expected = [f"activities:page:{start}:{end}:0"]
+            else:
+                expected = []
+            unchecked[name] = sum(key not in entries for key in expected)
+            if name == "activities" and not activity_terminal:
+                unchecked[name] = max(1, unchecked[name])
     assessment = (
         "Historical completeness is not established. The scan is bounded by the selected dates; "
         "failures, missing data, unexamined dates and unimplemented endpoints may remain."
@@ -168,6 +205,7 @@ def report(root):
         "query_status_counts": dict(statuses),
         "integrity_failures": corrupt,
         "categories": dict(categories),
+        "unchecked_planned_queries": dict(unchecked),
         "schema": schema,
         "activities": {
             "unique_listed": len(activity_ids),
@@ -229,11 +267,27 @@ def report(root):
     atomic_bytes(out / "inventory.md", ("\n".join(lines) + "\n").encode())
     buf = io.StringIO(newline="")
     writer = csv.writer(buf)
-    writer.writerow(["dataset", "path", "type", "occurrences", "responses_present"])
+    writer.writerow(
+        [
+            "dataset",
+            "path",
+            "type",
+            "occurrences",
+            "responses_present",
+            "dataset_responses",
+        ]
+    )
     for (dataset, path), types in sorted(schemas.items()):
         for typ, count in sorted(types.items()):
             writer.writerow(
-                [dataset, path, typ, count, len(schema_responses[(dataset, path)])]
+                [
+                    dataset,
+                    path,
+                    typ,
+                    count,
+                    len(schema_responses[(dataset, path)]),
+                    json_files[dataset],
+                ]
             )
     atomic_bytes(out / "data_dictionary.csv", buf.getvalue().encode())
     return result

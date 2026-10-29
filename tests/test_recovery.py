@@ -133,3 +133,38 @@ def test_failure_after_page_is_visible(tmp_path):
         == "failed"
     )
     assert "private" not in e.state_path.read_text()
+
+
+def test_authorization_failure_stops_after_checkpoint(tmp_path):
+    from garmin_exporter.exporter import AuthenticationFailed
+
+    class Error(Exception):
+        status_code = 401
+
+    class Unauthorized:
+        calls = 0
+
+        def get_daily_sleep(self, day):
+            self.calls += 1
+            raise Error()
+
+    client = Unauthorized()
+    e = Exporter(client, tmp_path, delay=0)
+    with pytest.raises(AuthenticationFailed):
+        e.run(date(2020, 1, 1), date(2020, 1, 2), ["sleep"])
+    assert client.calls == 1
+    assert list(e.state["queries"].values())[0]["http_status"] == 401
+
+
+def test_unchecked_and_schema_denominator(tmp_path):
+    from garmin_exporter.report import report
+
+    client = Client()
+    e = Exporter(client, tmp_path, delay=0)
+    e.run(date(2020, 1, 1), date(2020, 1, 2), ["sleep"])
+    del e.state["queries"]["sleep:2020-01-02"]
+    e.save()
+    result = report(tmp_path)
+    assert result["unchecked_planned_queries"]["sleep"] == 1
+    assert result["schema"]["sleep"]["$.calendarDate"]["dataset_responses"] == 1
+    assert result["categories"]["sleep"]["observed_start"] == "2020-01-01"

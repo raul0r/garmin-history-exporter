@@ -40,11 +40,23 @@ def main(argv=None):
         p.add_argument("--batch-days", type=int, default=30)
     args = parser.parse_args(argv)
     if args.command in ("report", "status"):
-        with archive_lock(args.output):
-            result = report(args.output)
+        try:
+            with archive_lock(args.output):
+                result = report(args.output)
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Report failed ({type(exc).__name__}).", file=sys.stderr)
+            return 1
         print(result["assessment"])
         print(result["query_status_counts"])
-        return 0
+        return (
+            1
+            if result["integrity_failures"]
+            or any(result["unchecked_planned_queries"].values())
+            or any(
+                k != "success" and v for k, v in result["query_status_counts"].items()
+            )
+            else 0
+        )
     if args.command != "auth-test":
         start = args.date if args.command == "snapshot" else args.start_date
         end = args.date if args.command == "snapshot" else args.end_date
@@ -86,6 +98,7 @@ def main(argv=None):
                 k != "success" and v for k, v in result["query_status_counts"].items()
             )
             or result["integrity_failures"]
+            or any(result["unchecked_planned_queries"].values())
             else 0
         )
     except KeyboardInterrupt:

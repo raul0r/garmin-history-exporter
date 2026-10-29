@@ -27,6 +27,10 @@ def valid_original(data):
         return False
 
 
+class AuthenticationFailed(RuntimeError):
+    """Authentication failed after renewal; stop the export."""
+
+
 class Exporter:
     def __init__(self, client, root, delay=0.25, retries=3, sleep=time.sleep):
         self.client, self.root, self.delay, self.retries, self.sleep = (
@@ -130,6 +134,10 @@ class Exporter:
                 )
                 self.state["queries"][key] = entry
                 self.save()
+                if status == 401:
+                    raise AuthenticationFailed(
+                        "Authentication failed after renewal"
+                    ) from None
                 return False
         return False
 
@@ -212,6 +220,19 @@ class Exporter:
                 self.save()
                 return
             seen_pages.add(signature)
+            page_ids = [
+                str(item.get("activityId", ""))
+                for item in page
+                if isinstance(item, dict)
+            ]
+            if (
+                page
+                and page_ids
+                and all(ident in seen_activities for ident in page_ids)
+            ):
+                self.state["queries"][key]["status"] = "repeated_page"
+                self.save()
+                return
             for item in page:
                 if (
                     not isinstance(item, dict)

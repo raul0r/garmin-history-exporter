@@ -24,3 +24,16 @@ jobs:
         run: ./run.sh --help
       - if: runner.os == 'Windows'
         run: ./run.ps1 --help
+      - if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          ./run.sh --output "${{ runner.temp }}/launcher archive" report
+          if ./run.sh invalid-command; then exit 1; fi
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./run.ps1 --output "${{ runner.temp }}/launcher archive" report
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          ./run.ps1 invalid-command
+          if ($LASTEXITCODE -eq 0) { exit 1 }
+          exit 0
